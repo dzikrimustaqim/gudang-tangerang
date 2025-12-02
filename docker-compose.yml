@@ -1,0 +1,88 @@
+name: gudang-tng
+
+services:
+  # MariaDB Database
+  gudang_db:
+    image: mariadb:11.2
+    container_name: gudang-tng_db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-warehouse_root_pass_2024}
+      MYSQL_DATABASE: ${DB_NAME:-warehouse_db}
+      MYSQL_USER: ${DB_USER:-warehouse_user}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-warehouse_pass_2024}
+    volumes:
+      - gudang_db_data:/var/lib/mysql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks:
+      - gudang-tng_network
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Backend Application
+  gudang_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend
+    container_name: gudang-tng_app
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-8080}
+      DB_HOST: ${DB_HOST:-gudang_db}
+      DB_USER: ${DB_USER:-warehouse_user}
+      DB_PASSWORD: ${DB_PASSWORD:-warehouse_pass_2024}
+      DB_NAME: ${DB_NAME:-warehouse_db}
+    volumes:
+      - web_dist:/web-dist
+    depends_on:
+      gudang_db:
+        condition: service_healthy
+    networks:
+      - gudang-tng_network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+  # Nginx Web Server with Frontend
+  gudang_web:
+    image: nginx:1.27-alpine
+    container_name: gudang-tng_web
+    restart: unless-stopped
+    ports:
+      - "18085:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - web_dist:/usr/share/nginx/html:ro
+    depends_on:
+      gudang_app:
+        condition: service_healthy
+    networks:
+      - gudang-tng_network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  gudang-tng_network:
+    driver: bridge
+    name: gudang-tng_network
+
+volumes:
+  gudang_db_data:
+    driver: local
+    name: gudang-tng_db_data
+  web_dist:
+    driver: local
+    name: gudang-tng_web_dist
